@@ -174,6 +174,8 @@ rec {
 
   saml2aws = pkgs.callPackage ./pkgs/saml2aws.nix { inherit saml2aws; };
 
+  mkdocs = pkgs.callPackage ./pkgs/mkdocs.nix { };
+
 } // optionalAttrs (! pkgs.stdenv.isDarwin) rec {
 
   openstackclient = pkgs.callPackage ./pkgs/openstack-cli {};
