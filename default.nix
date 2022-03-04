@@ -33,17 +33,8 @@ let
         gitlab = pkgs.callPackage ./pkgs/terraform-provider-gitlab.nix
           { source = sources.terraform-provider-gitlab; };
 
-        flexibleengine = super.terraform-providers.flexibleengine.overrideAttrs (old:
-          with sources.terraform-provider-flexibleengine; {
-            inherit version;
-            pname = repo;
-            src = pkgs.fetchzip {
-              inherit url sha256;
-            };
-            postBuild = "mv go/bin/${repo}{,_v${version}}";
-            passthru.provider-source-address = "registry.terraform.io/toolbox/flexibleengine";
-          }
-        );
+        flexibleengine = pkgs.callPackage ./pkgs/terraform-provider-flexibleengine.nix
+          { source = sources.terraform-provider-flexibleengine; };
 
         huaweicloud = pkgs.callPackage ./pkgs/terraform-provider-huaweicloud.nix
           { source = sources.terraform-provider-huaweicloud; };
