@@ -4,21 +4,6 @@ import concurrent.futures as cf
 import urllib3
 from kubernetes import client, config
 
-urllib3.disable_warnings()
-
-def COREv1():
-    config.load_kube_config()
-    return client.CoreV1Api()
-
-def APIv1():
-    config.load_kube_config()
-    return client.AppsV1Api()
-
-def CUSTOM_API():
-    config.load_kube_config()
-    return client.CustomObjectsApi()
-
-RDSIDE = "required_during_scheduling_ignored_during_execution"
 
 def dict_parser(dico, key, value=None):
     """ Finds nested dict
@@ -48,7 +33,7 @@ def dict_parser(dico, key, value=None):
     return None
 
 
-def check_and_update_pod_status(pod, timeout):
+def check_and_update_pod_status(api, pod, timeout):
     """ Check the status of a pod and update corresponding instance
     params:
     pod: (Pod) the pod to check/update status
@@ -57,17 +42,17 @@ def check_and_update_pod_status(pod, timeout):
     """
     replicas = 1
     current_replicas = 0
-    available_replicas = 0
+    ready_replicas = 0
     elapsed_time = 0
     if pod.get_owner()["kind"] == "ReplicaSet":
-        while replicas != available_replicas \
+        while replicas != ready_replicas \
                 and elapsed_time < timeout:
-            status = APIv1().read_namespaced_replica_set(
+            status = api.read_namespaced_replica_set(
                 pod.get_owner()["name"],
                 pod.get_namespace()
             ).to_dict()["status"]
             replicas = status["replicas"]
-            available_replicas = status["available_replicas"]
+            ready_replicas = status["ready_replicas"]
             pod.set_status(status)
             time.sleep(1)
             elapsed_time += 1
@@ -75,7 +60,7 @@ def check_and_update_pod_status(pod, timeout):
     elif pod.get_owner()["kind"] == "StatefulSet":
         while replicas != current_replicas \
                 and elapsed_time < timeout:
-            status = APIv1().read_namespaced_stateful_set(
+            status = api.read_namespaced_stateful_set(
                 pod.get_owner()["name"],
                 pod.get_namespace()
             ).to_dict()["status"]
@@ -86,16 +71,17 @@ def check_and_update_pod_status(pod, timeout):
             elapsed_time += 1
 
 
-def count_nodes():
+def count_nodes(custom_api):
     """ returns number of node"""
-    return len(CUSTOM_API().list_cluster_custom_object(
+    return len(custom_api.list_cluster_custom_object(
         "metrics.k8s.io", "v1beta1", "nodes")["items"])
 
 
 def describe_pods(name, namespace, containers):
-    number_of_nodes = count_nodes()
+    core = client.CoreV1Api()
+    api = client.AppsV1Api()
 
-    desc_pod = COREv1().read_namespaced_pod(
+    desc_pod = core.read_namespaced_pod(
         name,
         namespace).to_dict()
 
@@ -103,12 +89,12 @@ def describe_pods(name, namespace, containers):
     owner_name = desc_pod["metadata"]["owner_references"][0]["name"]
 
     if owner_kind == "ReplicaSet":
-        status = APIv1().read_namespaced_replica_set(
+        status = api.read_namespaced_replica_set(
             owner_name,
             namespace
         ).to_dict()["status"]
 
-        return Pod(
+        return kube_resources.Pod(
                 name,
                 namespace,
                 desc_pod["spec"]["node_name"],
@@ -120,7 +106,7 @@ def describe_pods(name, namespace, containers):
         )
 
 
-def get_all_pods():
+def get_all_pods(custom_api):
     """ List all pods
     returns:
     pods: (List(Pod)) the list of all pods
@@ -129,7 +115,7 @@ def get_all_pods():
     results = []
     # List pods and make a describe on each pod
     with cf.ProcessPoolExecutor() as executor:
-        for pod in CUSTOM_API().list_cluster_custom_object(
+        for pod in custom_api.list_cluster_custom_object(
                 "metrics.k8s.io", "v1beta1", "pods")["items"]:
             results.append(
                 executor.submit(
@@ -140,27 +126,27 @@ def get_all_pods():
                 )
             )
         for f in cf.as_completed(results):
-            if isinstance(f.result(), Pod):
+            if isinstance(f.result(), kube_resources.Pod):
                 pods.append(f.result())
 
     return pods
 
 
-def get_all_nodes():
+def get_all_nodes(custom_api, core):
     """ List all nodes
     returns:
     nodes: (list(Node)) List of all nodes
     """
-    pods = get_all_pods()
+    pods = get_all_pods(custom_api)
     nodes = []
     # list nodes and get usage
     top_node = sorted(
-        CUSTOM_API().list_cluster_custom_object(
+        custom_api.list_cluster_custom_object(
             "metrics.k8s.io", "v1beta1", "nodes")["items"],
         key=lambda n: n["metadata"]["name"]
     )
     ls_node = sorted(
-        COREv1().list_node().to_dict()["items"],
+        core.list_node().to_dict()["items"],
         key=lambda n: n["metadata"]["name"]
     )
 
@@ -171,7 +157,7 @@ def get_all_nodes():
                 node_pods.append(pod)
 
         nodes.append(
-            Node(top["metadata"]["name"],
+            kube_resources.Node(top["metadata"]["name"],
                     ls["status"]["allocatable"]["cpu"],
                     ls["status"]["allocatable"]["memory"],
                     top["usage"]["cpu"],
@@ -245,14 +231,14 @@ def select_destination_nodes(nodes, percent, limit):
     destination_nodes = {
         "has_memory": [],
         "has_cpu": [],
-        "has_cpu_and_memory": []
+        #"has_cpu_and_memory": []
     }
     for node in nodes:
-        if node.get_cpu_percent() < float(percent) and \
-                node.get_memory_percent() < float(percent):
-            destination_nodes["has_cpu_and_memory"].append(
-                node
-            )
+        #if node.get_cpu_percent() < float(percent) and \
+        #        node.get_memory_percent() < float(percent):
+        #    destination_nodes["has_cpu_and_memory"].append(
+        #        node
+        #    )
         if node.get_cpu_percent() < float(percent):
             destination_nodes["has_cpu"].append(
                 node
@@ -362,16 +348,22 @@ class Rebalancer:
     """
 
     def __init__(self,
-                 resource_percent=90,
-                 pod_limit=3,
-                 node_limit=100,
-                 timeout=120):
+                 resource_percent,
+                 pod_limit,
+                 node_limit,
+                 timeout):
+
+        urllib3.disable_warnings()
+        config.load_kube_config()
+        self.core = client.CoreV1Api()
+        self.api = client.AppsV1Api()
+        self.custom_api = client.CustomObjectsApi()
         self.pod_limit = pod_limit
         self.node_limit = node_limit
         self.timeout = timeout
         self.resource_percent = resource_percent
-        self.pods = get_all_pods()
-        self.nodes = get_all_nodes()
+        self.pods = get_all_pods(self.custom_api)
+        self.nodes = get_all_nodes(self.custom_api, self.core)
         self.overloaded_nodes = select_overloaded_nodes(
             self.nodes,
             self.resource_percent,
@@ -407,10 +399,10 @@ class Rebalancer:
         return self.destination_nodes
 
     def update_pods(self):
-        self.pods = get_all_pods()
+        self.pods = get_all_pods(self.custom_api)
 
     def update_nodes(self):
-        self.nodes = get_all_nodes()
+        self.nodes = get_all_nodes(self.custom_api, self.core)
 
     def update_overloaded_nodes(self):
         self.update_nodes()
@@ -447,7 +439,7 @@ class Rebalancer:
                 for n in self.nodes:
                     name = n.get_name()
                     if name != node.get_name():
-                        COREv1().patch_node(name, cordon_body)
+                        self.core.patch_node(name, cordon_body)
                         cordoned.append(name)
 
                 print("Moving pod {0} to node {1}...".format(
@@ -456,18 +448,19 @@ class Rebalancer:
                     )
                 )
 
-                COREv1().delete_namespaced_pod(
+                self.core.delete_namespaced_pod(
                     pod.get_name(),
                     pod.get_namespace()
                 )
-                check_and_update_pod_status(pod, self.timeout)
+                check_and_update_pod_status(self.api, pod, self.timeout)
                 dst_nodes.update(self.destination_nodes)
                 for n in cordoned:
-                    COREv1().patch_node(n, uncordon_body)
+                    self.core.patch_node(n, uncordon_body)
                 cordoned.clear()
+                return 0
             except (RuntimeError, TypeError, AttributeError, ValueError):
                 for node in cordoned:
-                    COREv1().patch_node(node, uncordon_body)
+                    self.core.patch_node(node, uncordon_body)
                 cordoned.clear()
 
     def move_pods(self, pod_name=None, dst_node=None):
@@ -497,10 +490,11 @@ class Rebalancer:
                             key=lambda p: p.get_memory(),
                             reverse=True
                         )[:self.pod_limit]
-                        dst_nodes = self.destination_nodes
-                        for node in dst_nodes["has_memory"]:
-                            for pod in high_mem:
-                                self.move(pod, node)
+                        for pod in high_mem:
+                            self.update_destination_nodes()
+                            for node in self.destination_nodes["has_memory"]:
+                                if self.move(pod, node) == 0:
+                                    break
 
                 if key == "need_cpu":
                     for no in value:
@@ -510,7 +504,8 @@ class Rebalancer:
                             key=lambda p: p.get_cpu(),
                             reverse=True
                         )[:self.pod_limit]
-                        dst_nodes = self.destination_nodes
-                        for node in dst_nodes["has_cpu"]:
-                            for pod in high_cpu:
-                                self.move(pod, node)
+                        for pod in high_cpu:
+                            self.update_destination_nodes()
+                            for node in self.destination_nodes["has_cpu"]:
+                                if self.move(pod, node) == 0:
+                                    break

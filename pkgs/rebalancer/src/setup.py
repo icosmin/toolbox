@@ -1,12 +1,12 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
-    name="kube-rebalancer",
+    name="kube_rebalancer",
     version="0.0.1",
     description="Used to move pod from a node to another",
     author="Yacine SAIBI",
     author_email="yacine.saibi@orange.com",
-    packages=["rebalancer"],
+    packages=find_packages(),
     install_requires=["kubernetes", "quantiphy", "urllib3"],
-    scripts=["bin/rebalancer-move-pods"],
+    scripts=["bin/rebalancer-move-pods"]
 )

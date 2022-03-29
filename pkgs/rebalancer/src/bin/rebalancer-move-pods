@@ -3,7 +3,6 @@
 import argparse
 import rebalancer as rb
 
-
 def get_args():
     parser = argparse.ArgumentParser(
         prog="Rebalancer",
@@ -51,9 +50,9 @@ def get_args():
     return arguments
 
 
-if __name__ == "__main__":
+def main():
     args = get_args()
-    rebalancer = rb.Rebalancer(
+    rb_inst = rb.Rebalancer(
         args.resource_percent,
         args.pod_limit,
         args.node_limit,
@@ -63,12 +62,12 @@ if __name__ == "__main__":
     if args.pods_names:
         pods = args.pods_names.split(" ")
         for pod in pods:
-            rebalancer.move_pods(
+            rb_inst.move_pods(
                 pod,
                 args.dst_node
             )
     else:
-        over_nodes = rebalancer.get_overloaded_nodes()
+        over_nodes = rb_inst.get_overloaded_nodes()
         node_to_move = False
         for need_type, nodes in over_nodes.items():
             print("\n=====================%s=====================" % need_type)
@@ -92,8 +91,11 @@ if __name__ == "__main__":
         if node_to_move:
             apply = input("Apply ? (y/N)")
             if apply in ["y", "Y", "yes", "Yes", "YES"]:
-                rebalancer.move_pods()
+                rb_inst.move_pods()
             else:
                 print("Aborting....")
         else:
             print("No overloaded node found")
+
+
+main()
